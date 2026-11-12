@@ -1,17 +1,79 @@
+import os
+import urllib.request
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import matplotlib.font_manager as fm
 
-# 1. Setup Thai Font in Matplotlib for App Rendering
-try:
-    font_path = 'Kanit-Regular.ttf'
-    fm.fontManager.addfont(font_path)
-    plt.rcParams['font.family'] = 'Kanit'
-    plt.rcParams['axes.unicode_minus'] = False
-except Exception as e:
-    pass
+# 1. Setup Thai Font in Matplotlib (โหลดอัตโนมัติ + ตรวจว่าไฟล์ฟอนต์ใช้ได้จริง)
+FONT_PATH = "Kanit-Regular.ttf"
+FONT_URLS = [
+    "https://github.com/google/fonts/raw/main/ofl/kanit/Kanit-Regular.ttf",
+    "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/kanit/Kanit-Regular.ttf",
+    "https://raw.githubusercontent.com/google/fonts/main/ofl/kanit/Kanit-Regular.ttf",
+]
+
+def _is_valid_font(path):
+    try:
+        if os.path.getsize(path) < 20000:
+            return False
+        with open(path, "rb") as f:
+            return f.read(4) in (b"\x00\x01\x00\x00", b"OTTO", b"true")
+    except OSError:
+        return False
+
+def _has_thai(path):
+    """เช็คว่าไฟล์ฟอนต์มีอักษรไทยจริง (ก = U+0E01)"""
+    try:
+        return fm.get_font(path).get_char_index(0x0E01) != 0
+    except Exception:
+        return False
+
+def load_thai_font():
+    # 1) ฟอนต์ Kanit: ใช้ไฟล์ที่มีอยู่ หรือโหลดใหม่ถ้ายังไม่มี/ไฟล์เสีย
+    if not (_is_valid_font(FONT_PATH) and _has_thai(FONT_PATH)):
+        if os.path.exists(FONT_PATH):
+            os.remove(FONT_PATH)
+        for url in FONT_URLS:
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=20) as r, open(FONT_PATH, "wb") as f:
+                    f.write(r.read())
+                if _is_valid_font(FONT_PATH) and _has_thai(FONT_PATH):
+                    break
+                os.remove(FONT_PATH)
+            except Exception:
+                if os.path.exists(FONT_PATH):
+                    os.remove(FONT_PATH)
+    if os.path.exists(FONT_PATH) and _has_thai(FONT_PATH):
+        return fm.FontProperties(fname=FONT_PATH)
+    # 2) สำรอง: หาฟอนต์ไทยที่ติดตั้งในเครื่อง (ชื่อที่รู้จักก่อน แล้วสแกนทั้งหมด)
+    preferred = ["Noto Sans Thai", "Sarabun", "TH Sarabun New", "Tahoma", "Leelawadee UI",
+                 "Garuda", "Loma", "Waree", "Norasi", "Kinnari", "Umpush", "Laksaman"]
+    for name in preferred:
+        try:
+            path = fm.findfont(name, fallback_to_default=False)
+            if _has_thai(path):
+                return fm.FontProperties(fname=path)
+        except Exception:
+            continue
+    for path in sorted({f.fname for f in fm.fontManager.ttflist}):
+        if _has_thai(path):
+            return fm.FontProperties(fname=path)
+    return None
+
+THAI_FONT = load_thai_font()
+
+def font_kw(size):
+    """คืนค่า font สำหรับใส่ในข้อความของกราฟ (ระบุฟอนต์ตรง ๆ ไม่พึ่ง rcParams)"""
+    if THAI_FONT is None:
+        return {"fontsize": size}
+    fp = THAI_FONT.copy()
+    fp.set_size(size)
+    return {"fontproperties": fp}
+
+plt.rcParams["axes.unicode_minus"] = False
 
 # 2. Localized Thai Dataset
 thai_data = [
@@ -129,6 +191,8 @@ with col1:
 with col2:
     st.subheader("📊 การแจกแจงวิเคราะห์ความคุ้มค่า")
     if not filtered_df.empty:
+        if THAI_FONT is None:
+            st.caption("⚠️ ไม่พบฟอนต์ภาษาไทยในระบบ ตัวอักษรไทยในกราฟอาจแสดงเป็นกล่อง")
         fig, ax = plt.subplots(figsize=(8, 6))
         sns.scatterplot(
             ax=ax,
@@ -141,12 +205,19 @@ with col2:
             palette="Set1",
             alpha=0.9
         )
-        ax.set_title("วิเคราะห์ความคุ้มค่า (ราคา vs คะแนนรีวิว)", fontsize=14, fontweight="bold", pad=15)
-        ax.set_xlabel("ราคา (USD)", fontsize=11)
-        ax.set_ylabel("คะแนนรีวิว (1.0 ถึง 5.0)", fontsize=11)
+        ax.set_title("วิเคราะห์ความคุ้มค่า (ราคา vs คะแนนรีวิว)", pad=15, **font_kw(15))
+        ax.set_xlabel("ราคา (USD)", **font_kw(12))
+        ax.set_ylabel("คะแนนรีวิว (1.0 ถึง 5.0)", **font_kw(12))
         ax.set_xlim(left=max(0, price_range[0] - 10), right=price_range[1] + 10)
         ax.set_ylim(0.5, 5.5)
         ax.grid(True, linestyle="--", alpha=0.5)
+        # ตัวอักษรไทยในกล่องคำอธิบาย (legend)
+        legend = ax.get_legend()
+        if legend is not None and THAI_FONT is not None:
+            for t in legend.get_texts():
+                t.set_fontproperties(THAI_FONT)
+            legend.get_title().set_fontproperties(THAI_FONT)
         st.pyplot(fig)
+        plt.close(fig)
     else:
         st.info("ไม่มีข้อมูลเพื่อสร้างแผนภูมิการวิเคราะห์")
